@@ -1,8 +1,4 @@
 // src/popup/App.tsx
-// Minimal chat UI: summarize button + free-text Q&A. Voice input and
-// action execution are deliberately out of scope for this component
-// until Phases 2 and 4.
-
 import { useState } from "react";
 
 type ChatTurn = { role: "user" | "assistant"; text: string };
@@ -12,6 +8,7 @@ export default function App() {
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [blockedNotice, setBlockedNotice] = useState<string | null>(null);
+  const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
   async function getActiveTabContent() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -22,9 +19,36 @@ export default function App() {
     return content as { title: string; text: string; url: string };
   }
 
+  function handleBackgroundResponse(response: any) {
+    if (!response) {
+      setErrorNotice("No response from the extension background worker.");
+      return;
+    }
+    if (response.error) {
+      setErrorNotice(response.error);
+      return;
+    }
+    if (response.blocked) {
+      setBlockedNotice(response.reason);
+      return;
+    }
+    if (response.result?.text) {
+      const prefix = response.truncated
+        ? `[${response.result.provider}, page truncated to fit token limit] `
+        : `[${response.result.provider}] `;
+      setTurns((prev) => [
+        ...prev,
+        { role: "assistant", text: prefix + response.result.text },
+      ]);
+      return;
+    }
+    setErrorNotice("Received an unexpected response shape from the background worker.");
+  }
+
   async function handleSummarize() {
     setLoading(true);
     setBlockedNotice(null);
+    setErrorNotice(null);
     try {
       const page = await getActiveTabContent();
       const response = await chrome.runtime.sendMessage({
@@ -32,15 +56,9 @@ export default function App() {
         url: page.url,
         extractedText: page.text,
       });
-
-      if (response.blocked) {
-        setBlockedNotice(response.reason);
-        return;
-      }
-      setTurns((prev) => [
-        ...prev,
-        { role: "assistant", text: response.result.text },
-      ]);
+      handleBackgroundResponse(response);
+    } catch (err) {
+      setErrorNotice(String(err));
     } finally {
       setLoading(false);
     }
@@ -50,6 +68,7 @@ export default function App() {
     if (!question.trim()) return;
     setLoading(true);
     setBlockedNotice(null);
+    setErrorNotice(null);
     const askedQuestion = question;
     setQuestion("");
     setTurns((prev) => [...prev, { role: "user", text: askedQuestion }]);
@@ -62,15 +81,9 @@ export default function App() {
         extractedText: page.text,
         question: askedQuestion,
       });
-
-      if (response.blocked) {
-        setBlockedNotice(response.reason);
-        return;
-      }
-      setTurns((prev) => [
-        ...prev,
-        { role: "assistant", text: response.result.text },
-      ]);
+      handleBackgroundResponse(response);
+    } catch (err) {
+      setErrorNotice(String(err));
     } finally {
       setLoading(false);
     }
@@ -81,11 +94,14 @@ export default function App() {
       <h2 style={{ margin: "0 0 8px" }}>Kip</h2>
 
       <button onClick={handleSummarize} disabled={loading}>
-        Summarize this page
+        {loading ? "Working..." : "Summarize this page"}
       </button>
 
       {blockedNotice && (
         <p style={{ color: "#b00020", fontSize: 13 }}>{blockedNotice}</p>
+      )}
+      {errorNotice && (
+        <p style={{ color: "#b00020", fontSize: 13, whiteSpace: "pre-wrap" }}>⚠ {errorNotice}</p>
       )}
 
       <div style={{ maxHeight: 220, overflowY: "auto", margin: "8px 0" }}>

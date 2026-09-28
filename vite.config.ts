@@ -6,10 +6,17 @@ import manifest from "./manifest.config";
 export default defineConfig({
   plugins: [react(), crx({ manifest })],
   server: {
-    // CRXJS needs a fixed port for the HMR websocket the extension
-    // service worker connects back to during dev.
     port: 5173,
     strictPort: true,
+    // Extension pages (chrome-extension://...) have no relation to
+    // localhost:5173 in their origin, so Vite's HMR client can't infer
+    // the dev server's host/port automatically the way it would on a
+    // normal webpage. Without this, the HMR websocket falls back to
+    // ws://localhost/ (default port 80) and fails to connect.
+    hmr: {
+      host: "localhost",
+      port: 5173,
+    },
   },
   build: {
     outDir: "dist",

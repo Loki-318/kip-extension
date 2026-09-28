@@ -20,16 +20,33 @@ type AskRequest = {
 
 type InboundMessage = SummarizeRequest | AskRequest;
 
+const MAX_CONTENT_CHARS = 4000;
+
+function truncateContent(text: string): { text: string; truncated: boolean } {
+  if (text.length <= MAX_CONTENT_CHARS) return { text, truncated: false };
+  return { text: text.slice(0, MAX_CONTENT_CHARS), truncated: true };
+}
+
+async function isLocalOnlyMode(): Promise<boolean> {
+  const { localOnlyMode } = await chrome.storage.local.get("localOnlyMode");
+  return Boolean(localOnlyMode);
+}
+
 chrome.runtime.onMessage.addListener((message: InboundMessage, _sender, sendResponse) => {
   handleMessage(message)
     .then(sendResponse)
     .catch((err) => sendResponse({ error: String(err) }));
-  // Required for async sendResponse in MV3 service workers.
   return true;
 });
 
 async function handleMessage(message: InboundMessage) {
-  if (isBlockedUrl(message.url)) {
+  const localOnly = await isLocalOnlyMode();
+  const matchesBlocklist = isBlockedUrl(message.url); // still logged either way — FR20
+
+  // FR19: local-only mode is the explicit user override that lets a
+  // blocklisted page through. Without this check, the guard block was
+  // unconditional and local-only mode had no effect — that was the bug.
+  if (matchesBlocklist && !localOnly) {
     return {
       blocked: true,
       reason:
@@ -37,16 +54,12 @@ async function handleMessage(message: InboundMessage) {
     };
   }
 
-  // Wrap untrusted page content in explicit delimiters before it ever
-  // reaches a prompt template — see requirements addendum SR1/SR2.
-  const safeContent = `<untrusted_page_content>\n${message.extractedText}\n</untrusted_page_content>`;
+  const { text: trimmedText, truncated } = truncateContent(message.extractedText);
+  const safeContent = `<untrusted_page_content>\n${trimmedText}\n</untrusted_page_content>`;
 
   if (message.type === "SUMMARIZE_PAGE") {
-    const result = await routeToLLM({
-      task: "summarize",
-      content: safeContent,
-    });
-    return { blocked: false, result };
+    const result = await routeToLLM({ task: "summarize", content: safeContent });
+    return { blocked: false, result, truncated };
   }
 
   if (message.type === "ASK_QUESTION") {
@@ -55,7 +68,7 @@ async function handleMessage(message: InboundMessage) {
       content: safeContent,
       question: message.question,
     });
-    return { blocked: false, result };
+    return { blocked: false, result, truncated };
   }
 
   return { error: "Unknown message type" };

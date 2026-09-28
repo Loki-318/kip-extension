@@ -1,7 +1,17 @@
 // src/content/index.ts
-// Runs inside the actual page. Phase 1 job: extract readable content on
-// request from the popup. No accessibility-tree/action-grounding logic
-// here yet — that's Phase 4.
+// IMPORTANT: this import must be first, before any other code runs.
+// CRXJS injects its own (incompletely-initialized) custom-elements
+// polyfill into content scripts during `npm run dev` to support the
+// Vite HMR error overlay. That polyfill patches Node.prototype.cloneNode
+// globally and throws "Cannot read properties of null (reading
+// '__CE_registry')" on ANY cloneNode call in this realm — including
+// ones inside @mozilla/readability's own internals — because the
+// registry never gets properly set up. Importing the real polyfill
+// ourselves, first, initializes it correctly and avoids the crash.
+// This only matters in dev mode; production builds (`npm run build`)
+// don't inject CRXJS's broken version at all.
+// See: https://github.com/crxjs/chrome-extension-tools/issues/803
+import "@webcomponents/custom-elements";
 
 import { Readability } from "@mozilla/readability";
 
@@ -13,10 +23,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 function extractReadableContent(): { title: string; text: string; url: string } {
-  // Readability mutates the DOM it's given, so clone the document first
-  // to avoid visibly altering the page the user is looking at.
-  const clonedDoc = document.cloneNode(true) as Document;
-  const article = new Readability(clonedDoc).parse();
+  let article: ReturnType<Readability["parse"]> = null;
+
+  try {
+    const html = document.documentElement.outerHTML;
+    const parsedDoc = new DOMParser().parseFromString(html, "text/html");
+    article = new Readability(parsedDoc).parse();
+  } catch (err) {
+    console.warn("[Kip] Readability parse failed, falling back to raw text:", err);
+  }
 
   return {
     title: article?.title ?? document.title,
