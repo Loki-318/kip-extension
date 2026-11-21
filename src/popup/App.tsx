@@ -2,6 +2,10 @@
 import { useState } from "react";
 
 type ChatTurn = { role: "user" | "assistant"; text: string };
+type PageContent = { title: string; text: string; url: string };
+type AccessResponse = { blocked?: boolean; reason?: string; error?: string };
+const MAX_CONTEXT_TURNS = 6;
+const MAX_CONTEXT_CHARS_PER_TURN = 800;
 
 export default function App() {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
@@ -10,13 +14,38 @@ export default function App() {
   const [blockedNotice, setBlockedNotice] = useState<string | null>(null);
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
-  async function getActiveTabContent() {
+  async function getActiveTab() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab.id) throw new Error("No active tab found");
+    return tab;
+  }
+
+  async function checkActiveTabAccess(tab: chrome.tabs.Tab) {
+    const response = (await chrome.runtime.sendMessage({
+      type: "CHECK_PAGE_ACCESS",
+      url: tab.url ?? "",
+    })) as AccessResponse;
+    if (response?.error) throw new Error(response.error);
+    if (response?.blocked) {
+      setBlockedNotice(response.reason ?? "This page cannot be processed.");
+      return false;
+    }
+    return true;
+  }
+
+  async function getActiveTabContent(tab: chrome.tabs.Tab): Promise<PageContent> {
     if (!tab.id) throw new Error("No active tab found");
     const content = await chrome.tabs.sendMessage(tab.id, {
       type: "EXTRACT_PAGE_CONTENT",
     });
-    return content as { title: string; text: string; url: string };
+    return content as PageContent;
+  }
+
+  function getConversationContext(): ChatTurn[] {
+    return turns.slice(-MAX_CONTEXT_TURNS).map((turn) => ({
+      role: turn.role,
+      text: turn.text.slice(0, MAX_CONTEXT_CHARS_PER_TURN),
+    }));
   }
 
   function handleBackgroundResponse(response: any) {
@@ -50,7 +79,9 @@ export default function App() {
     setBlockedNotice(null);
     setErrorNotice(null);
     try {
-      const page = await getActiveTabContent();
+      const tab = await getActiveTab();
+      if (!(await checkActiveTabAccess(tab))) return;
+      const page = await getActiveTabContent(tab);
       const response = await chrome.runtime.sendMessage({
         type: "SUMMARIZE_PAGE",
         url: page.url,
@@ -65,21 +96,29 @@ export default function App() {
   }
 
   async function handleAsk() {
-    if (!question.trim()) return;
+    await askQuestion(question);
+  }
+
+  async function askQuestion(rawQuestion: string) {
+    if (!rawQuestion.trim()) return;
     setLoading(true);
     setBlockedNotice(null);
     setErrorNotice(null);
-    const askedQuestion = question;
+    const askedQuestion = rawQuestion.trim();
     setQuestion("");
-    setTurns((prev) => [...prev, { role: "user", text: askedQuestion }]);
+    const conversation = getConversationContext();
 
     try {
-      const page = await getActiveTabContent();
+      const tab = await getActiveTab();
+      if (!(await checkActiveTabAccess(tab))) return;
+      setTurns((prev) => [...prev, { role: "user", text: askedQuestion }]);
+      const page = await getActiveTabContent(tab);
       const response = await chrome.runtime.sendMessage({
         type: "ASK_QUESTION",
         url: page.url,
         extractedText: page.text,
         question: askedQuestion,
+        conversation,
       });
       handleBackgroundResponse(response);
     } catch (err) {

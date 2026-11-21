@@ -1,5 +1,5 @@
 // src/options/App.tsx
-// Settings: API keys, local-only mode toggle, blocklist viewer (FR22-FR24).
+// Settings: Groq API key and blocklist viewer.
 // Keys are stored in chrome.storage.local only — never synced, never
 // bundled into source or committed to the repo.
 
@@ -7,8 +7,6 @@ import { useEffect, useState } from "react";
 
 export default function App() {
   const [groqApiKey, setGroqApiKey] = useState("");
-  const [githubToken, setGithubToken] = useState("");
-  const [localOnlyMode, setLocalOnlyMode] = useState(false);
   const [saved, setSaved] = useState(false);
   const [guardLog, setGuardLog] = useState<
     { url: string; blocked: boolean; timestamp: number }[]
@@ -16,17 +14,15 @@ export default function App() {
 
   useEffect(() => {
     chrome.storage.local
-      .get(["groqApiKey", "githubToken", "localOnlyMode", "guardLog"])
+      .get(["groqApiKey", "guardLog"])
       .then((stored) => {
         setGroqApiKey(stored.groqApiKey ?? "");
-        setGithubToken(stored.githubToken ?? "");
-        setLocalOnlyMode(Boolean(stored.localOnlyMode));
         setGuardLog(stored.guardLog ?? []);
       });
   }, []);
 
   async function handleSave() {
-    await chrome.storage.local.set({ groqApiKey, githubToken, localOnlyMode });
+    await chrome.storage.local.set({ groqApiKey });
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
@@ -50,27 +46,6 @@ export default function App() {
             onChange={(e) => setGroqApiKey(e.target.value)}
             style={{ width: "100%", boxSizing: "border-box" }}
           />
-        </label>
-        <label style={{ display: "block" }}>
-          GitHub Models Token
-          <input
-            type="password"
-            value={githubToken}
-            onChange={(e) => setGithubToken(e.target.value)}
-            style={{ width: "100%", boxSizing: "border-box" }}
-          />
-        </label>
-      </section>
-
-      <section style={{ marginBottom: 20 }}>
-        <h3>Privacy</h3>
-        <label>
-          <input
-            type="checkbox"
-            checked={localOnlyMode}
-            onChange={(e) => setLocalOnlyMode(e.target.checked)}
-          />
-          {" "}Local-only mode (routes everything to Ollama, no cloud calls)
         </label>
       </section>
 

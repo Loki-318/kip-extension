@@ -4,11 +4,18 @@
 
 import { isBlockedUrl } from "./sensitiveGuard";
 import { routeToLLM } from "./llmRouter";
+import type { ConversationTurn } from "./llmRouter";
+
+type CheckPageAccessRequest = {
+  type: "CHECK_PAGE_ACCESS";
+  url: string;
+};
 
 type SummarizeRequest = {
   type: "SUMMARIZE_PAGE";
   url: string;
   extractedText: string;
+  conversation?: ConversationTurn[];
 };
 
 type AskRequest = {
@@ -16,20 +23,19 @@ type AskRequest = {
   url: string;
   extractedText: string;
   question: string;
+  conversation?: ConversationTurn[];
 };
 
-type InboundMessage = SummarizeRequest | AskRequest;
+type InboundMessage =
+  | CheckPageAccessRequest
+  | SummarizeRequest
+  | AskRequest;
 
 const MAX_CONTENT_CHARS = 4000;
 
 function truncateContent(text: string): { text: string; truncated: boolean } {
   if (text.length <= MAX_CONTENT_CHARS) return { text, truncated: false };
   return { text: text.slice(0, MAX_CONTENT_CHARS), truncated: true };
-}
-
-async function isLocalOnlyMode(): Promise<boolean> {
-  const { localOnlyMode } = await chrome.storage.local.get("localOnlyMode");
-  return Boolean(localOnlyMode);
 }
 
 chrome.runtime.onMessage.addListener((message: InboundMessage, _sender, sendResponse) => {
@@ -40,18 +46,20 @@ chrome.runtime.onMessage.addListener((message: InboundMessage, _sender, sendResp
 });
 
 async function handleMessage(message: InboundMessage) {
-  const localOnly = await isLocalOnlyMode();
   const matchesBlocklist = isBlockedUrl(message.url); // still logged either way — FR20
 
-  // FR19: local-only mode is the explicit user override that lets a
-  // blocklisted page through. Without this check, the guard block was
-  // unconditional and local-only mode had no effect — that was the bug.
-  if (matchesBlocklist && !localOnly) {
+  // Groq is the only active provider in Phase 1, so sensitive pages remain
+  // blocked until the local Ollama provider is deliberately re-enabled.
+  if (matchesBlocklist) {
     return {
       blocked: true,
       reason:
-        "This page matches the sensitive-page blocklist (payment/billing/checkout). Enable local-only mode to proceed.",
+        "This page matches the sensitive-page blocklist (payment/billing/checkout). Local processing is not available yet.",
     };
+  }
+
+  if (message.type === "CHECK_PAGE_ACCESS") {
+    return { blocked: false };
   }
 
   const { text: trimmedText, truncated } = truncateContent(message.extractedText);
@@ -67,6 +75,7 @@ async function handleMessage(message: InboundMessage) {
       task: "qa",
       content: safeContent,
       question: message.question,
+      conversation: message.conversation,
     });
     return { blocked: false, result, truncated };
   }
